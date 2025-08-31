@@ -8,3 +8,16 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    exclude-paths: # managed by bitnami
+      - ".github/workflows/assign-asset-label.yml"
+      - ".github/workflows/ci-pipeline.yml"
+      - ".github/workflows/clossing-issues.yml"
+      - ".github/workflows/comments.yml"
+      - ".github/workflows/markdown-linter.yml"
+      - ".github/workflows/move-closed-issues.yml"
+      - ".github/workflows/pr-review-hack.yml"
+      - ".github/workflows/pr-reviews-requested.yml"
+      - ".github/workflows/pr-reviews.yml"
+      - ".github/workflows/reasign.yml"
+      - ".github/workflows/stale.yml"
+      - ".github/workflows/triage.yml"
