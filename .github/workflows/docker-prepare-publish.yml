@@ -1,0 +1,197 @@
+name: '[CI/CD] Docker prepare and publish'
+
+# This workflow uses actions that are not certified by GitHub.
+# They are provided by a third-party and are governed by
+# separate terms of service, privacy policy, and support
+# documentation.
+
+on:
+  schedule:
+    - cron: '0 1 * * 1'
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+concurrency:
+  group: docker-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  discover:
+    name: Discover build matrix
+    runs-on: ubuntu-latest
+    outputs:
+      chunks: ${{ steps.finalize-matrix.outputs.chunks }}
+      has_chunks: ${{ steps.finalize-matrix.outputs.has_chunks }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Compute candidate contexts
+        id: candidates
+        shell: bash
+        run: |
+          # Build records: {"app","os","context","version"}; version read from Dockerfile label
+          mapfile -t files < <(find bitnami -type f -name Dockerfile | sort)
+          for f in "${files[@]}"; do
+            ctx="$(dirname "$f")"
+            app="$(echo "$ctx" | awk -F/ '{print $2}')"
+            os="$( echo "$ctx" | awk -F/ '{print $4}')"
+            ver="$(grep -Eo 'org.opencontainers.image.version[[:space:]]*=[[:space:]]*\"?[0-9]+\.[0-9]+\.[0-9]+\"?' "$f" \
+                    | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+')" || ver=""
+
+            if [[ -z "$ver" ]]; then
+              ver="$(grep -Eo 'org.opencontainers.image.version[[:space:]]*=[[:space:]]*\"?[0-9]+\"?' "$f" \
+                    | grep -Eo '[0-9]+')" || ver=""
+            fi
+
+            if [[ -z "$ver" ]]; then
+              echo "::warning::No version label in $f; skipping"
+              continue
+            fi
+
+            jq -nc --arg app "$app" --arg os "$os" --arg ctx "$ctx" --arg ver "$ver" \
+              '{app:$app, os:$os, context:$ctx, version:$ver}' >> /tmp/all.json
+          done
+          
+          jq -cs '.' /tmp/all.json > /tmp/all_array.json
+          echo "all=$(cat /tmp/all_array.json)" >> "$GITHUB_OUTPUT"
+
+      - name: Compute changed contexts (non-cron)
+        id: changed
+        if: github.event_name != 'schedule' && github.event_name != 'workflow_dispatch'
+        shell: bash
+        run: |
+          # Determine diff range:
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            base_sha="${{ github.event.pull_request.base.sha }}"
+            head_sha="${{ github.event.pull_request.head.sha }}"
+          else
+            # push to main: compare with previous commit
+            base_sha="${{ github.event.before }}"
+            head_sha="${{ github.sha }}"
+          fi
+
+          # Get changed files and map to contexts under bitnami/*/*/*
+          changed_files="$(git diff --name-only "$base_sha" "$head_sha")"
+
+          # Build a set of candidate contexts
+          all='${{ steps.candidates.outputs.all }}'
+          all_with_context="$(
+            jq '(
+              INDEX(.context)
+            )' <<<"$all"
+          )"
+
+          changed_contexts="$(
+            awk -F/ '/^bitnami\// && NF>=4 { print $1"/"$2"/"$3"/"$4 }' <<<"$changed_files" \
+              | sort -u \
+              | jq -R -s --argjson dict "$all_with_context" '
+                  split("\n")
+                  | map(select(length>0))
+                  | map($dict[.] // empty)   # fetch each object; drop non-matches
+                '
+          )"
+
+          echo "changed=$(printf %s "$changed_contexts" | jq -c .)" >> $GITHUB_OUTPUT
+      
+      - name: Compute tags
+        id: tags
+        shell: bash
+        run: |
+          all='${{ steps.candidates.outputs.all }}'
+          annotated="$(
+            jq 'map(
+              (.version
+                | capture("^(?<major>\\d+)(?:\\.(?<minor>\\d+))?(?:\\.(?<patch>\\d+))?$")
+              ) as $v
+              | . + {
+                major:($v.major | tonumber),
+                minor:(if $v.minor then ($v.minor | tonumber) else null end),
+                patch:(if $v.patch then ($v.patch | tonumber) else null end),
+                key: (.app + "|" + .os + "|" + ($v.major|tostring))
+              }
+            )' <<<"$all"
+          )"
+
+          winners="$(
+            jq '
+              ( group_by(.key)
+              | map( max_by([(.minor // -1), (.patch // -1), .os]) )
+              | INDEX(.key)
+              )' <<<"$annotated"
+          )"
+
+          with_tags="$(
+            jq --argjson winners "$winners" '
+              map(
+                . as $it
+                | .is_major_latest = ($winners[$it.key].context == $it.context)
+                | .tags =
+                    (
+                      [ $it.version ]
+                      + (if $it.minor != null
+                        then [ ($it.major|tostring) + "." + ($it.minor|tostring) ]
+                        else [] end)                    
+                      + ( if .is_major_latest then [ ($it.major|tostring) ] else [] end )
+                      | unique
+                    )
+                | del(.key)
+              )
+            ' <<<"$annotated"
+          )"
+
+          echo "all_with_tags=$(printf %s "$with_tags" | jq -c .)" >> $GITHUB_OUTPUT
+
+      - name: Finalize matrix
+        id: finalize-matrix
+        shell: bash
+        run: |
+          all_with_tags='${{ steps.tags.outputs.all_with_tags }}'
+          if [[ "${{ github.event_name }}" == "schedule" || "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            set="$all_with_tags"
+          else
+            changed='${{ steps.changed.outputs.changed }}'
+            set="$(
+              jq -n --argjson all "$all_with_tags" --argjson changed "$changed" '
+                ($all | INDEX(.context)) as $idx
+                | [ $changed[] | ($idx[.context]) ]   # pull enriched objects
+              '
+            )"
+          fi
+
+          size=256
+          len=$(jq 'length' <<<"$set")
+          chunks="[]"
+          i=0
+          while (( i < len )); do
+            slice=$(jq -c --argjson s "$i" --argjson e "$((i+size))" '.[$s:$e]' <<<"$set")
+            # Each matrix job will receive one item like: { "payload": "{\"include\":[...]}" }
+            payload=$(jq -cn --argjson slice "$slice" '{payload: ({include: $slice}|tostring)}')
+            chunks=$(jq -c --argjson item "$payload" '. + [$item]' <<<"$chunks")
+            i=$((i+size))
+          done
+
+          echo "chunks=$chunks" >> "$GITHUB_OUTPUT"
+          echo "has_chunks=$(jq 'length>0' <<<"$chunks")" >> "$GITHUB_OUTPUT"
+
+  build-chunks:
+    name: Build (all chunks)
+    needs: discover
+    if: needs.discover.outputs.has_chunks == 'true'
+    strategy:
+      fail-fast: false
+      matrix: 
+        include: ${{ fromJSON(needs.discover.outputs.chunks) }}
+    uses: ./.github/workflows/docker-publish.yml
+    with:
+      matrix: ${{ matrix.payload }}
+    secrets: inherit
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
