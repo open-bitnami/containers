@@ -11,7 +11,7 @@ jobs:
   sync:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout your fork
+      - name: Checkout
         uses: actions/checkout@v5
         with:
           fetch-depth: 0

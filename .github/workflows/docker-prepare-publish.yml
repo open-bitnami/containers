@@ -16,7 +16,7 @@ on:
 
 concurrency:
   group: docker-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   discover:
@@ -61,7 +61,7 @@ jobs:
           jq -cs '.' /tmp/all.json > /tmp/all_array.json
           echo "all=$(cat /tmp/all_array.json)" >> "$GITHUB_OUTPUT"
 
-      - name: Compute changed contexts (non-cron)
+      - name: Compute changed contexts
         id: changed
         if: github.event_name != 'schedule' && github.event_name != 'workflow_dispatch'
         shell: bash
