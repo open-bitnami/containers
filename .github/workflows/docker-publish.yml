@@ -41,6 +41,9 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
 
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
       - name: Format repo slug
         uses: actions/github-script@v8
         id: repo_slug
@@ -87,6 +90,7 @@ jobs:
           labels: ${{ steps.image_with_tags.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          platforms: linux/amd64,linux/arm64
 
       # Sign the resulting Docker image digest except on PRs.
       # This will only write to the public Rekor transparency log when the Docker
