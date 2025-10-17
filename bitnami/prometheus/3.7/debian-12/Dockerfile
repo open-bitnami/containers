@@ -7,13 +7,13 @@ ARG DOWNLOADS_URL="downloads.bitnami.com/files/stacksmith"
 ARG TARGETARCH
 
 LABEL org.opencontainers.image.base.name="docker.io/bitnami/minideb:bookworm" \
-      org.opencontainers.image.created="2025-10-16T18:19:06Z" \
+      org.opencontainers.image.created="2025-10-16T15:52:45Z" \
       org.opencontainers.image.description="Application packaged by Broadcom, Inc." \
-      org.opencontainers.image.documentation="https://github.com/bitnami/containers/tree/main/bitnami/grafana-image-renderer/README.md" \
-      org.opencontainers.image.source="https://github.com/bitnami/containers/tree/main/bitnami/grafana-image-renderer" \
-      org.opencontainers.image.title="grafana-image-renderer" \
+      org.opencontainers.image.documentation="https://github.com/bitnami/containers/tree/main/bitnami/prometheus/README.md" \
+      org.opencontainers.image.source="https://github.com/bitnami/containers/tree/main/bitnami/prometheus" \
+      org.opencontainers.image.title="prometheus" \
       org.opencontainers.image.vendor="Broadcom, Inc." \
-      org.opencontainers.image.version="4.0.19"
+      org.opencontainers.image.version="3.7.0"
 
 ENV HOME="/" \
     OS_ARCH="${TARGETARCH:-amd64}" \
@@ -23,14 +23,12 @@ ENV HOME="/" \
 COPY prebuildfs /
 SHELL ["/bin/bash", "-o", "errexit", "-o", "nounset", "-o", "pipefail", "-c"]
 # Install required system packages and dependencies
-RUN install_packages ca-certificates chromium curl fonts-freefont-ttf fonts-ipafont-gothic fonts-kacst fonts-thai-tlwg fonts-wqy-zenhei gnupg jq libbz2-1.0 libffi8 libgcc-s1 liblzma5 libncursesw6 libreadline8 libsqlite3-0 libssl3 libstdc++6 libtinfo6 libx11-xcb1 libxcb-dri3-0 libxshmfence1 libxss1 libxtst6 procps wget zlib1g
+RUN install_packages ca-certificates curl procps
 RUN --mount=type=secret,id=downloads_url,env=SECRET_DOWNLOADS_URL \
     DOWNLOADS_URL=${SECRET_DOWNLOADS_URL:-${DOWNLOADS_URL}} ; \
     mkdir -p /tmp/bitnami/pkg/cache/ ; cd /tmp/bitnami/pkg/cache/ || exit 1 ; \
     COMPONENTS=( \
-      "python-3.14.0-4-linux-${OS_ARCH}-debian-12" \
-      "node-22.20.0-0-linux-${OS_ARCH}-debian-12" \
-      "grafana-image-renderer-4.0.19-0-linux-${OS_ARCH}-debian-12" \
+      "prometheus-3.7.0-0-linux-${OS_ARCH}-debian-12" \
     ) ; \
     for COMPONENT in "${COMPONENTS[@]}"; do \
       if [ ! -f "${COMPONENT}.tar.gz" ]; then \
@@ -45,18 +43,20 @@ RUN apt-get update && apt-get upgrade -y && \
     apt-get clean && rm -rf /var/lib/apt/lists /var/cache/apt/archives
 RUN chmod g+rwX /opt/bitnami
 RUN find / -perm /6000 -type f -exec chmod a-s {} \; || true
+RUN ln -sf /opt/bitnami/prometheus/conf /etc/prometheus
+RUN ln -sf /opt/bitnami/prometheus/data /prometheus
+RUN chown -R 1001:1001 /opt/bitnami/prometheus
 RUN uninstall_packages curl
 
-ENV APP_VERSION="4.0.19" \
-    BITNAMI_APP_NAME="grafana-image-renderer" \
-    HTTP_HOST="0.0.0.0" \
-    HTTP_PORT="8080" \
-    IMAGE_REVISION="8" \
-    PATH="/opt/bitnami/python/bin:/opt/bitnami/node/bin:$PATH"
+RUN mkdir -p /opt/bitnami/prometheus/data/ && chmod g+rwX /opt/bitnami/prometheus/data/
+ENV APP_VERSION="3.7.0" \
+    BITNAMI_APP_NAME="prometheus" \
+    IMAGE_REVISION="0" \
+    PATH="/opt/bitnami/prometheus/bin:$PATH"
 
-EXPOSE 3000 8080
+EXPOSE 9090
 
-WORKDIR /opt/bitnami/grafana-image-renderer
+WORKDIR /opt/bitnami/prometheus
 USER 1001
-ENTRYPOINT [ "node" ]
-CMD [ "build/app.js", "server", "--config=conf/config.json" ]
+ENTRYPOINT [ "/opt/bitnami/prometheus/bin/prometheus" ]
+CMD [ "--config.file=/opt/bitnami/prometheus/conf/prometheus.yml", "--storage.tsdb.path=/opt/bitnami/prometheus/data", "--web.console.libraries=/opt/bitnami/prometheus/conf/console_libraries", "--web.console.templates=/opt/bitnami/prometheus/conf/consoles" ]
